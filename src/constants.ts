@@ -142,6 +142,7 @@ export enum ChatModelProviders {
   COPILOT_PLUS = "copilot-plus",
   MISTRAL = "mistralai",
   DEEPSEEK = "deepseek",
+  MCP = "mcp",
 }
 
 export enum ModelCapability {
@@ -386,7 +387,10 @@ export type Provider = ChatModelProviders | EmbeddingModelProviders;
 
 export type SettingKeyProviders = Exclude<
   ChatModelProviders,
-  ChatModelProviders.OPENAI_FORMAT | ChatModelProviders.LM_STUDIO | ChatModelProviders.OLLAMA
+  | ChatModelProviders.OPENAI_FORMAT
+  | ChatModelProviders.LM_STUDIO
+  | ChatModelProviders.OLLAMA
+  | ChatModelProviders.MCP
 >;
 
 // Provider metadata interface
@@ -497,6 +501,12 @@ export const ProviderInfo: Record<Provider, ProviderMetadata> = {
   [EmbeddingModelProviders.COPILOT_PLUS_JINA]: {
     label: "Copilot Plus",
     host: "https://api.brevilabs.com/v1",
+    keyManagementURL: "",
+    listModelURL: "",
+  },
+  [ChatModelProviders.MCP]: {
+    label: "Model Context Protocol",
+    host: "local",
     keyManagementURL: "",
     listModelURL: "",
   },
@@ -615,7 +625,7 @@ export const DEFAULT_SETTINGS: CopilotSettings = {
   xaiApiKey: "",
   mistralApiKey: "",
   deepseekApiKey: "",
-  defaultChainType: ChainType.LLM_CHAIN,
+  defaultChainType: ChainType.PIRATE_CHAIN,
   defaultModelKey: ChatModels.GPT_41 + "|" + ChatModelProviders.OPENAI,
   embeddingModelKey: EmbeddingModels.OPENAI_EMBEDDING_SMALL + "|" + EmbeddingModelProviders.OPENAI,
   temperature: 0.1,
@@ -661,6 +671,9 @@ export const DEFAULT_SETTINGS: CopilotSettings = {
   lastDismissedVersion: null,
   passMarkdownImages: true,
   enableCustomPromptTemplating: true,
+  mcpServers: [],
+  mcpDisabledTools: [],
+  mcpAlwaysSendTools: false,
 };
 
 export const EVENT_NAMES = {

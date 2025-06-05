@@ -25,6 +25,7 @@ import {
 } from "@/settings/model";
 import SharedState from "@/sharedState";
 import { FileParserManager } from "@/tools/FileParserManager";
+import { MCPToolsManager } from "@/tools/MCPTools";
 import {
   Editor,
   MarkdownView,
@@ -46,6 +47,7 @@ export default class CopilotPlugin extends Plugin {
   userMessageHistory: string[] = [];
   vectorStoreManager: VectorStoreManager;
   fileParserManager: FileParserManager;
+  mcpToolsManager: MCPToolsManager;
   settingsUnsubscriber?: () => void;
   private autocompleteService: AutocompleteService;
 
@@ -90,6 +92,10 @@ export default class CopilotPlugin extends Plugin {
 
     IntentAnalyzer.initTools(this.app.vault);
 
+    // Initialize MCP Tools Manager
+    this.mcpToolsManager = MCPToolsManager.getInstance();
+    await this.mcpToolsManager.initialize();
+
     this.registerEvent(
       this.app.workspace.on("editor-menu", (menu: Menu, editor: Editor) => {
         const selectedText = editor.getSelection().trim();
@@ -133,6 +139,11 @@ export default class CopilotPlugin extends Plugin {
 
     this.settingsUnsubscriber?.();
     this.autocompleteService?.destroy();
+
+    // Shutdown MCP connections
+    if (this.mcpToolsManager) {
+      await this.mcpToolsManager.shutdown();
+    }
 
     logInfo("Copilot plugin unloaded");
   }

@@ -1,4 +1,5 @@
 import { CustomModel, ProjectConfig } from "@/aiParams";
+import { MCPServerConfig } from "@/LLMProviders/mcpClient";
 import { atom, createStore, useAtomValue } from "jotai";
 import { v4 as uuidv4 } from "uuid";
 
@@ -105,6 +106,9 @@ export interface CopilotSettings {
   projectList: Array<ProjectConfig>;
   passMarkdownImages: boolean;
   enableCustomPromptTemplating: boolean;
+  mcpServers: Array<MCPServerConfig>;
+  mcpDisabledTools: string[];
+  mcpAlwaysSendTools: boolean;
 }
 
 export const settingsStore = createStore();

@@ -67,7 +67,7 @@ const ContextControl: React.FC<ChatControlsProps> = ({
     }
   };
 
-  if (selectedChain !== ChainType.COPILOT_PLUS_CHAIN) {
+  if (selectedChain !== ChainType.COPILOT_PLUS_CHAIN && selectedChain !== ChainType.PIRATE_CHAIN) {
     return null;
   }
 

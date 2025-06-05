@@ -9,6 +9,7 @@ import {
 import { createGetFileTreeTool } from "@/tools/FileTreeTools";
 import { simpleYoutubeTranscriptionTool } from "@/tools/YoutubeTools";
 import { ToolManager } from "@/tools/toolManager";
+import { MCPToolsManager } from "@/tools/MCPTools";
 import { extractChatHistory, extractYoutubeUrl } from "@/utils";
 import { BrevilabsClient } from "./brevilabsClient";
 import { Vault } from "obsidian";
@@ -156,12 +157,33 @@ export class IntentAnalyzer {
         });
       }
     }
+
+    // Handle MCP tools
+    const mcpManager = MCPToolsManager.getInstance();
+    const mcpTools = mcpManager.getAllMCPTools();
+
+    for (const mcpTool of mcpTools) {
+      if (message.includes(mcpTool.name.toLowerCase())) {
+        // Extract arguments for MCP tool if any
+        const mcpMatch = originalMessage.match(new RegExp(`${mcpTool.name}\\s+(.*)`, "i"));
+        const args = mcpMatch ? mcpMatch[1].trim() : "";
+
+        processedToolCalls.push({
+          tool: mcpTool.name, // Use tool name as string for MCP tools
+          args: { input: args },
+        });
+      }
+    }
   }
 
   private static removeAtCommands(message: string): string {
+    const mcpManager = MCPToolsManager.getInstance();
+    const mcpToolNames = mcpManager.getAllMCPTools().map((tool) => tool.name.toLowerCase());
+    const allToolNames = [...COPILOT_TOOL_NAMES, ...mcpToolNames];
+
     return message
       .split(" ")
-      .filter((word) => !COPILOT_TOOL_NAMES.includes(word.toLowerCase()))
+      .filter((word) => !allToolNames.includes(word.toLowerCase()))
       .join(" ")
       .trim();
   }

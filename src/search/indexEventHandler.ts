@@ -35,7 +35,10 @@ export class IndexEventHandler {
     }
 
     const currentChainType = getChainType();
-    if (currentChainType !== ChainType.COPILOT_PLUS_CHAIN) {
+    if (
+      currentChainType !== ChainType.COPILOT_PLUS_CHAIN &&
+      currentChainType !== ChainType.PIRATE_CHAIN
+    ) {
       return;
     }
 
