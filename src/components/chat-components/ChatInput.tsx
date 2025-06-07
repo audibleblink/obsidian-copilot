@@ -10,6 +10,7 @@ import { ChainType } from "@/chainFactory";
 import { AddContextNoteModal } from "@/components/modals/AddContextNoteModal";
 import { AddImageModal } from "@/components/modals/AddImageModal";
 import { ListPromptModal } from "@/components/modals/ListPromptModal";
+import { MCPToolsPickerModal } from "@/components/modals/MCPToolsPickerModal";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -23,7 +24,7 @@ import { CustomPromptProcessor } from "@/customPromptProcessor";
 import { COPILOT_TOOL_NAMES } from "@/LLMProviders/intentAnalyzer";
 import { Mention } from "@/mentions/Mention";
 import { getModelKeyFromModel, useSettingsValue } from "@/settings/model";
-import { getToolDescription } from "@/tools/toolManager";
+import { MCPToolsManager } from "@/tools/MCPTools";
 import { checkModelApiKey, err2String, extractNoteFiles, isNoteTitleUnique } from "@/utils";
 import {
   ArrowBigUp,
@@ -32,6 +33,7 @@ import {
   CornerDownLeft,
   Image,
   Loader2,
+  Settings,
   StopCircle,
   X,
 } from "lucide-react";
@@ -105,7 +107,9 @@ const ChatInput = forwardRef<{ focus: () => void }, ChatInputProps>(
     const [selectedProject, setSelectedProject] = useState<ProjectConfig | null>(null);
     const settings = useSettingsValue();
     const isCopilotPlus =
-      currentChain === ChainType.COPILOT_PLUS_CHAIN || currentChain === ChainType.PROJECT_CHAIN;
+      currentChain === ChainType.COPILOT_PLUS_CHAIN ||
+      currentChain === ChainType.PROJECT_CHAIN ||
+      currentChain === ChainType.PIRATE_CHAIN;
     const [loadingMessageIndex, setLoadingMessageIndex] = useState(0);
     const loadingMessages = [
       "Loading the project context...",
@@ -156,14 +160,69 @@ const ChatInput = forwardRef<{ focus: () => void }, ChatInputProps>(
       return currentModelKey;
     };
 
+    // Helper function to detect MCP tools mentioned in the message
+    const detectMentionedMCPTools = (message: string): string[] => {
+      try {
+        const mcpManager = MCPToolsManager.getInstance();
+        const allMCPTools = mcpManager.getAllMCPTools();
+        const mentionedTools: string[] = [];
+
+        for (const mcpTool of allMCPTools) {
+          // mcpTool.name is already in format @mcp-{serverName}-{toolName}
+          if (message.toLowerCase().includes(mcpTool.name.toLowerCase())) {
+            mentionedTools.push(mcpTool.name);
+          }
+        }
+
+        return mentionedTools;
+      } catch (error) {
+        console.warn("Failed to detect mentioned MCP tools:", error);
+        return [];
+      }
+    };
+
     const onSendMessage = (includeVault: boolean) => {
       if (!isCopilotPlus) {
         handleSendMessage();
         return;
       }
 
+      const toolCalls: string[] = [];
+
+      // Add vault tool if requested
+      if (includeVault) {
+        toolCalls.push("@vault");
+      }
+
+      // Check if any MCP tools are explicitly mentioned in the message
+      const mentionedMCPTools = detectMentionedMCPTools(inputMessage);
+
+      if (mentionedMCPTools.length > 0) {
+        // If MCP tools are explicitly mentioned, only send those mentioned tools
+        mentionedMCPTools.forEach((toolName) => {
+          if (!toolCalls.includes(toolName)) {
+            toolCalls.push(toolName);
+          }
+        });
+      } else if (settings.mcpAlwaysSendTools) {
+        // Only add all enabled MCP tools if no tools are explicitly mentioned
+        // and the always send setting is enabled
+        try {
+          const mcpManager = MCPToolsManager.getInstance();
+          const enabledMcpTools = mcpManager.getEnabledMCPTools();
+          enabledMcpTools.forEach((tool) => {
+            // tool.name is already in format @mcp-{serverName}-{toolName}
+            if (!toolCalls.includes(tool.name)) {
+              toolCalls.push(tool.name);
+            }
+          });
+        } catch (error) {
+          console.warn("Failed to get enabled MCP tools:", error);
+        }
+      }
+
       handleSendMessage({
-        toolCalls: includeVault ? ["@vault"] : [],
+        toolCalls,
         contextNotes,
         urls: contextUrls,
       });
@@ -265,21 +324,29 @@ const ChatInput = forwardRef<{ focus: () => void }, ChatInputProps>(
     };
 
     const showCopilotPlusOptionsModal = () => {
-      // Create a map of options with their descriptions
-      const optionsWithDescriptions = COPILOT_TOOL_NAMES.map((option) => ({
-        title: option,
-        description: getToolDescription(option),
-      }));
+      // Get enabled tools only (built-in + enabled MCP tools)
+      const mcpManager = MCPToolsManager.getInstance();
+      const mcpTools = mcpManager.getEnabledMCPTools();
+
+      // Combine built-in tools with enabled MCP tools
+      // Note: mcpTools already have prefixed names from getAllMCPTools()
+      const allToolNames = [
+        ...COPILOT_TOOL_NAMES,
+        ...mcpTools.map((tool) => tool.name), // tool.name is already @mcp-{serverName}-{toolName}
+      ];
 
       new ListPromptModal(
         app,
-        optionsWithDescriptions.map((o) => o.title),
+        allToolNames,
         (selectedOption: string) => {
           setInputMessage(inputMessage + selectedOption + " ");
-        },
-        // Add descriptions as a separate array
-        optionsWithDescriptions.map((o) => o.description)
+        }
+        // No descriptions passed - will show only tool names
       ).open();
+    };
+
+    const showMCPToolsModal = () => {
+      new MCPToolsPickerModal(app).open();
     };
 
     const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -601,6 +668,16 @@ const ChatInput = forwardRef<{ focus: () => void }, ChatInputProps>(
                     <Image className="tw-size-4" />
                   </Button>
                 )}
+                {isCopilotPlus && (
+                  <Button
+                    variant="ghost2"
+                    size="fit"
+                    onClick={showMCPToolsModal}
+                    title="Configure MCP Tools"
+                  >
+                    <Settings className="tw-size-4" />
+                  </Button>
+                )}
                 <Button
                   variant="ghost2"
                   size="fit"
@@ -611,7 +688,7 @@ const ChatInput = forwardRef<{ focus: () => void }, ChatInputProps>(
                   <span>chat</span>
                 </Button>
 
-                {currentChain === "copilot_plus" && (
+                {isCopilotPlus && (
                   <Button
                     variant="ghost2"
                     size="fit"

@@ -2,6 +2,7 @@ import { SettingItem } from "@/components/ui/setting-item";
 import { updateSetting, useSettingsValue } from "@/settings/model";
 import { PromptSortStrategy } from "@/types";
 import React from "react";
+import { MCPSettings } from "./MCPSettings";
 
 export const AdvancedSettings: React.FC = () => {
   const settings = useSettingsValue();
@@ -62,6 +63,11 @@ export const AdvancedSettings: React.FC = () => {
             }}
           />
         </div>
+      </section>
+
+      {/* MCP Settings Section */}
+      <section>
+        <MCPSettings />
       </section>
     </div>
   );

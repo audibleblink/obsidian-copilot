@@ -1,9 +1,9 @@
 {
-  "id": "copilot",
-  "name": "Copilot",
+  "id": "copirate",
+  "name": "Copirate",
   "version": "2.8.9",
   "minAppVersion": "0.15.0",
-  "description": "Your AI Copilot: Chat with Your Second Brain, Learn Faster, Work Smarter.",
+  "description": "Your AI copirate: Chat with Your Second Brain, Learn Faster, Work Smarter.",
   "author": "Logan Yang",
   "authorUrl": "https://twitter.com/logancyang",
   "fundingUrl": {

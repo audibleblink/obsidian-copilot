@@ -61,10 +61,11 @@ const SUGGESTED_PROMPTS: Record<string, NotePrompt> = {
   },
 };
 
-const PROMPT_KEYS: Record<ChainType, Array<keyof typeof SUGGESTED_PROMPTS>> = {
+const PROMPT_KEYS: Record<ChainType, (keyof typeof SUGGESTED_PROMPTS)[]> = {
   [ChainType.LLM_CHAIN]: ["activeNote", "quoteNote", "fun"],
   [ChainType.VAULT_QA_CHAIN]: ["qaVault", "qaVault", "quoteNote"],
   [ChainType.COPILOT_PLUS_CHAIN]: ["copilotPlus", "copilotPlus", "copilotPlus"],
+  [ChainType.PIRATE_CHAIN]: ["copilotPlus", "copilotPlus", "copilotPlus"],
   [ChainType.PROJECT_CHAIN]: ["copilotPlus", "copilotPlus", "copilotPlus"],
 };
 

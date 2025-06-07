@@ -182,6 +182,7 @@ const Chat: React.FC<ChatProps> = ({
       );
 
     // Extract Mentions (such as URLs) from original input message only if using Copilot Plus chain
+    // Disable URL processing for pirate mode
     const urlContextAddition =
       currentChain === ChainType.COPILOT_PLUS_CHAIN
         ? await mention.processUrls(inputMessage || "")
@@ -221,7 +222,7 @@ const Chat: React.FC<ChatProps> = ({
       context: {
         notes,
         urls:
-          currentChain === ChainType.COPILOT_PLUS_CHAIN
+          currentChain === ChainType.COPILOT_PLUS_CHAIN || currentChain === ChainType.PIRATE_CHAIN
             ? [...(urls || []), ...urlContextAddition.imageUrls]
             : urls || [],
       },
@@ -630,7 +631,10 @@ ${chatContent}`;
     setContextNotes([]);
     // Only modify includeActiveNote if in a non-COPILOT_PLUS_CHAIN mode
     // In COPILOT_PLUS_CHAIN mode, respect the settings.includeActiveNoteAsContext value
-    if (selectedChain !== ChainType.COPILOT_PLUS_CHAIN) {
+    if (
+      selectedChain !== ChainType.COPILOT_PLUS_CHAIN &&
+      selectedChain !== ChainType.PIRATE_CHAIN
+    ) {
       setIncludeActiveNote(false);
     } else {
       setIncludeActiveNote(settings.includeActiveNoteAsContext);
@@ -645,7 +649,10 @@ ${chatContent}`;
   useEffect(() => {
     if (settings.includeActiveNoteAsContext !== undefined) {
       // Only apply the setting if not in Project mode
-      if (selectedChain === ChainType.COPILOT_PLUS_CHAIN) {
+      if (
+        selectedChain === ChainType.COPILOT_PLUS_CHAIN ||
+        selectedChain === ChainType.PIRATE_CHAIN
+      ) {
         setIncludeActiveNote(settings.includeActiveNoteAsContext);
       } else {
         // In other modes, always disable including active note

@@ -1,6 +1,14 @@
 import { Notice } from "obsidian";
+import { MCPToolsManager } from "./MCPTools";
 
 export const getToolDescription = (tool: string): string => {
+  // Check if it's an MCP tool first
+  const mcpManager = MCPToolsManager.getInstance();
+  if (mcpManager.isMCPTool(tool)) {
+    const descriptions = mcpManager.getToolDescriptions();
+    return descriptions[tool] || "MCP tool";
+  }
+
   switch (tool) {
     case "@vault":
       return "Search through your vault for relevant information";
@@ -22,6 +30,12 @@ export class ToolManager {
     try {
       if (!tool) {
         throw new Error("Tool is undefined");
+      }
+
+      // Check if this is an MCP tool call
+      const mcpManager = MCPToolsManager.getInstance();
+      if (typeof tool === "string" && mcpManager.isMCPTool(tool)) {
+        return await mcpManager.executeMCPTool(tool, args);
       }
 
       const result = await tool.call(args);

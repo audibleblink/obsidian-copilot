@@ -57,7 +57,10 @@ export default class ChatModelManager {
     }
   >;
 
-  private readonly providerApiKeyMap: Record<ChatModelProviders, () => string> = {
+  private readonly providerApiKeyMap: Record<
+    Exclude<ChatModelProviders, ChatModelProviders.MCP>,
+    () => string
+  > = {
     [ChatModelProviders.OPENAI]: () => getSettings().openAIApiKey,
     [ChatModelProviders.GOOGLE]: () => getSettings().googleApiKey,
     [ChatModelProviders.AZURE_OPENAI]: () => getSettings().azureOpenAIApiKey,
@@ -311,8 +314,22 @@ export default class ChatModelManager {
           return;
         }
 
+        // Skip MCP models as they don't use traditional constructors
+        if (model.provider === ChatModelProviders.MCP) {
+          const modelKey = getModelKeyFromModel(model);
+          modelMap[modelKey] = {
+            hasApiKey: true, // MCP doesn't need API keys in the traditional sense
+            AIConstructor: null as any, // Not applicable for MCP
+            vendor: model.provider,
+          };
+          return;
+        }
+
         const constructor = this.getProviderConstructor(model);
-        const getDefaultApiKey = this.providerApiKeyMap[model.provider as ChatModelProviders];
+        const getDefaultApiKey =
+          this.providerApiKeyMap[
+            model.provider as Exclude<ChatModelProviders, ChatModelProviders.MCP>
+          ];
 
         const apiKey = model.apiKey || getDefaultApiKey();
         const modelKey = getModelKeyFromModel(model);
@@ -326,8 +343,13 @@ export default class ChatModelManager {
   }
 
   getProviderConstructor(model: CustomModel): ChatConstructorType {
+    // MCP doesn't have a traditional constructor since it uses external servers
+    if (model.provider === ChatModelProviders.MCP) {
+      throw new Error("MCP models don't use traditional constructors");
+    }
+
     const constructor: ChatConstructorType =
-      CHAT_PROVIDER_CONSTRUCTORS[model.provider as ChatModelProviders];
+      CHAT_PROVIDER_CONSTRUCTORS[model.provider as keyof typeof CHAT_PROVIDER_CONSTRUCTORS];
     if (!constructor) {
       console.warn(`Unknown provider: ${model.provider} for model: ${model.name}`);
       throw new Error(`Unknown provider: ${model.provider} for model: ${model.name}`);

@@ -192,6 +192,8 @@ export const stringToChainType = (chain: string): ChainType => {
       return ChainType.VAULT_QA_CHAIN;
     case "copilot_plus":
       return ChainType.COPILOT_PLUS_CHAIN;
+    case "pirate":
+      return ChainType.PIRATE_CHAIN;
     default:
       throw new Error(`Unknown chain type: ${chain}`);
   }

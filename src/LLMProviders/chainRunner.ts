@@ -15,10 +15,11 @@ import {
   MessageContent,
 } from "@/imageProcessing/imageProcessor";
 import { BrevilabsClient } from "@/LLMProviders/brevilabsClient";
-import { logInfo } from "@/logger";
+import { logInfo, logError } from "@/logger";
 import { getSettings, getSystemPrompt } from "@/settings/model";
 import { ChatMessage } from "@/sharedState";
 import { ToolManager } from "@/tools/toolManager";
+import { MCPToolsManager } from "@/tools/MCPTools";
 import {
   err2String,
   extractChatHistory,
@@ -30,84 +31,38 @@ import {
   withSuppressedTokenWarnings,
 } from "@/utils";
 import { BaseChatModel } from "@langchain/core/language_models/chat_models";
+import { Runnable } from "@langchain/core/runnables";
+import { tool } from "@langchain/core/tools";
+import { z } from "zod";
 import { Notice } from "obsidian";
 import ChainManager from "./chainManager";
 import { COPILOT_TOOL_NAMES, IntentAnalyzer } from "./intentAnalyzer";
 import ProjectManager from "./projectManager";
 
 class ThinkBlockStreamer {
-  private hasOpenThinkBlock = false;
-  private fullResponse = "";
+  public fullResponse = "";
 
   constructor(private updateCurrentAiMessage: (message: string) => void) {}
 
-  private handleClaude37Chunk(content: any[]) {
-    let textContent = "";
-    for (const item of content) {
-      switch (item.type) {
-        case "text":
-          textContent += item.text;
-          break;
-        case "thinking":
-          if (!this.hasOpenThinkBlock) {
-            this.fullResponse += "\n<think>";
-            this.hasOpenThinkBlock = true;
-          }
-          this.fullResponse += item.thinking;
-          this.updateCurrentAiMessage(this.fullResponse);
-          return true; // Indicate we handled a thinking chunk
-      }
-    }
-    if (textContent) {
-      this.fullResponse += textContent;
-    }
-    return false; // No thinking chunk handled
-  }
-
-  private handleDeepseekChunk(chunk: any) {
-    // Handle standard string content
-    if (typeof chunk.content === "string") {
-      this.fullResponse += chunk.content;
-    }
-
-    // Handle deepseek reasoning/thinking content
-    if (chunk.additional_kwargs?.reasoning_content) {
-      if (!this.hasOpenThinkBlock) {
-        this.fullResponse += "\n<think>";
-        this.hasOpenThinkBlock = true;
-      }
-      this.fullResponse += chunk.additional_kwargs.reasoning_content;
-      return true; // Indicate we handled a thinking chunk
-    }
-    return false; // No thinking chunk handled
-  }
-
   processChunk(chunk: any) {
-    let handledThinking = false;
-
-    // Handle Claude 3.7 array-based content
-    if (Array.isArray(chunk.content)) {
-      handledThinking = this.handleClaude37Chunk(chunk.content);
-    } else {
-      // Handle deepseek format
-      handledThinking = this.handleDeepseekChunk(chunk);
-    }
-
-    // Close think block if we have one open and didn't handle thinking content
-    if (this.hasOpenThinkBlock && !handledThinking) {
-      this.fullResponse += "</think>";
-      this.hasOpenThinkBlock = false;
+    // Trust LangChain to provide standardized content
+    if (chunk.content) {
+      if (typeof chunk.content === "string") {
+        this.fullResponse += chunk.content;
+      } else if (Array.isArray(chunk.content)) {
+        // Handle array content (text blocks)
+        for (const item of chunk.content) {
+          if (item.type === "text" && item.text) {
+            this.fullResponse += item.text;
+          }
+        }
+      }
     }
 
     this.updateCurrentAiMessage(this.fullResponse);
   }
 
   close() {
-    // Make sure to close any open think block at the end
-    if (this.hasOpenThinkBlock) {
-      this.fullResponse += "</think>";
-      this.updateCurrentAiMessage(this.fullResponse);
-    }
     return this.fullResponse;
   }
 }
@@ -122,6 +77,7 @@ export interface ChainRunner {
       debug?: boolean;
       ignoreSystemMessage?: boolean;
       updateLoading?: (loading: boolean) => void;
+      updateLoadingMessage?: (message: string) => void;
     }
   ): Promise<string>;
 }
@@ -142,6 +98,7 @@ abstract class BaseChainRunner implements ChainRunner {
       debug?: boolean;
       ignoreSystemMessage?: boolean;
       updateLoading?: (loading: boolean) => void;
+      updateLoadingMessage?: (message: string) => void;
     }
   ): Promise<string>;
 
@@ -155,9 +112,24 @@ abstract class BaseChainRunner implements ChainRunner {
     sources?: { title: string; score: number }[]
   ) {
     if (fullAIResponse && abortController.signal.reason !== ABORT_REASON.NEW_CHAT) {
+      // Include tool results in the saved context if they exist
+      let contextToSave = fullAIResponse;
+      const toolResults = (this as any).lastToolResults;
+
+      if (toolResults && toolResults.length > 0) {
+        // Prepend tool results to the response for context
+        const toolResultsText = toolResults
+          .map((result: any) => `[Tool ${result.name} Result: ${result.content}]`)
+          .join("\n");
+        contextToSave = `${toolResultsText}\n\n${fullAIResponse}`;
+
+        // Clear the tool results after using them
+        (this as any).lastToolResults = null;
+      }
+
       await this.chainManager.memoryManager
         .getMemory()
-        .saveContext({ input: userMessage.message }, { output: fullAIResponse });
+        .saveContext({ input: userMessage.message }, { output: contextToSave });
 
       addMessage({
         message: fullAIResponse,
@@ -246,6 +218,7 @@ class LLMChainRunner extends BaseChainRunner {
       debug?: boolean;
       ignoreSystemMessage?: boolean;
       updateLoading?: (loading: boolean) => void;
+      updateLoadingMessage?: (message: string) => void;
     }
   ): Promise<string> {
     const { debug = false } = options;
@@ -286,6 +259,7 @@ class VaultQAChainRunner extends BaseChainRunner {
       debug?: boolean;
       ignoreSystemMessage?: boolean;
       updateLoading?: (loading: boolean) => void;
+      updateLoadingMessage?: (message: string) => void;
     }
   ): Promise<string> {
     const { debug = false } = options;
@@ -458,13 +432,217 @@ class CopilotPlusChainRunner extends BaseChainRunner {
     return this.hasCapability(model, ModelCapability.VISION);
   }
 
-  private async streamMultimodalResponse(
+  /**
+   * Detect MCP tools mentioned in user message
+   */
+  private detectMCPTools(message: string): string[] {
+    const mcpManager = MCPToolsManager.getInstance();
+    const allMCPTools = mcpManager.getAllMCPTools();
+    const mentionedTools: string[] = [];
+
+    for (const mcpTool of allMCPTools) {
+      if (message.toLowerCase().includes(mcpTool.name.toLowerCase())) {
+        mentionedTools.push(mcpTool.name);
+      }
+    }
+
+    return mentionedTools;
+  }
+
+  /**
+   * Convert MCP tools to LangChain tool format for function calling
+   */
+  private async getMCPToolDefinitions(toolNames: string[]): Promise<any[]> {
+    const mcpManager = MCPToolsManager.getInstance();
+    const toolDefinitions: any[] = [];
+
+    for (const toolName of toolNames) {
+      // Parse tool name: @mcp-{serverName}-{toolName}
+      const match = toolName.match(/^@mcp-(.+?)-(.+)$/);
+      if (!match) continue;
+
+      const [, serverName, actualToolName] = match;
+
+      // Validate that actualToolName is not empty
+      if (!actualToolName || actualToolName.trim().length === 0) {
+        logError(`Invalid tool name format: ${toolName} - tool name part is empty`);
+        continue;
+      }
+
+      // Get tool details from server
+      const serverTools = mcpManager.getServerTools(serverName);
+      const mcpTool = serverTools.find((t: any) => t.name === actualToolName);
+
+      if (mcpTool) {
+        // Ensure the MCP tool has a valid name
+        const validToolName =
+          mcpTool.name && mcpTool.name.trim().length > 0 ? mcpTool.name : actualToolName;
+
+        // Convert JSON schema to Zod schema
+        const zodSchema = this.jsonSchemaToZod(
+          mcpTool.inputSchema || {
+            type: "object",
+            properties: {},
+            required: [],
+          }
+        );
+
+        // Create a proper LangChain tool
+        const langchainTool = tool(
+          async (args: any) => {
+            // This function will be called when the tool is invoked
+            return await mcpManager.executeMCPTool(toolName, args);
+          },
+          {
+            name: validToolName,
+            description: mcpTool.description || `MCP tool: ${validToolName}`,
+            schema: zodSchema,
+          }
+        );
+
+        // Add metadata to the tool instance
+        (langchainTool as any)._mcpServerName = serverName;
+        (langchainTool as any)._mcpToolName = toolName;
+
+        toolDefinitions.push(langchainTool);
+      }
+    }
+
+    return toolDefinitions;
+  }
+
+  /**
+   * Helper method to convert JSON Schema to Zod (basic implementation)
+   */
+  private jsonSchemaToZod(jsonSchema: any): z.ZodType<any> {
+    if (jsonSchema.type === "object") {
+      const shape: any = {};
+
+      if (jsonSchema.properties) {
+        for (const [key, value] of Object.entries(jsonSchema.properties)) {
+          const propSchema = value as any;
+          if (propSchema.type === "string") {
+            shape[key] = z.string();
+          } else if (propSchema.type === "number") {
+            shape[key] = z.number();
+          } else if (propSchema.type === "boolean") {
+            shape[key] = z.boolean();
+          } else if (propSchema.type === "array") {
+            shape[key] = z.array(z.any());
+          } else {
+            shape[key] = z.any();
+          }
+
+          // Make optional if not required
+          if (!jsonSchema.required?.includes(key)) {
+            shape[key] = shape[key].optional();
+          }
+        }
+      }
+
+      return z.object(shape);
+    }
+
+    return z.any();
+  }
+
+  /**
+   * Strip MCP tool mentions from user message
+   */
+  private stripMCPMentions(message: string): string {
+    const mcpManager = MCPToolsManager.getInstance();
+    const allMCPTools = mcpManager.getAllMCPTools();
+    const mcpToolNames = allMCPTools.map((tool) => tool.name.toLowerCase());
+
+    return message
+      .split(" ")
+      .filter((word) => !mcpToolNames.includes(word.toLowerCase()))
+      .join(" ")
+      .trim();
+  }
+
+  /**
+   * Execute MCP tools from LLM tool calls
+   */
+  private async executeMCPTools(toolCalls: any[], mentionedMCPTools: string[]): Promise<any[]> {
+    const mcpManager = MCPToolsManager.getInstance();
+    const results: any[] = [];
+
+    for (const toolCall of toolCalls) {
+      try {
+        logInfo(`Incoming tool_call: ${JSON.stringify(toolCall)}`);
+        // Ensure we have required fields (LangChain doesn't always provide them)
+        const toolCallId =
+          toolCall.id || `tool_call_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        const toolName = toolCall.name || "unknown_tool";
+
+        // Handle different formats of tool arguments
+        // LangChain might provide args in different ways depending on the provider
+        let toolArgs = {};
+        if (toolCall.args && typeof toolCall.args === "object") {
+          toolArgs = toolCall.args;
+        } else if (toolCall.input && typeof toolCall.input === "object") {
+          toolArgs = toolCall.input;
+        } else if (typeof toolCall === "object") {
+          // Sometimes the entire toolCall object might be the args
+          const { ...restArgs } = toolCall;
+          if (Object.keys(restArgs).length > 0) {
+            toolArgs = restArgs;
+          }
+        }
+
+        logInfo(`Extracted tool args: ${JSON.stringify(toolArgs)}`);
+
+        // Find the corresponding MCP tool
+        const mcpToolName = mentionedMCPTools.find((name) => name.includes(toolName));
+
+        if (mcpToolName) {
+          logInfo(`Executing MCP tool: ${mcpToolName} with args:`, toolArgs);
+          const result = await mcpManager.executeMCPTool(mcpToolName, toolArgs);
+
+          results.push({
+            tool_call_id: toolCallId,
+            tool_name: toolName,
+            output: result,
+          });
+        } else {
+          logError("Could not find matching MCP tool for:", toolCall);
+          results.push({
+            tool_call_id: toolCallId,
+            tool_name: toolName,
+            output: { error: "Tool not found" },
+          });
+        }
+      } catch (error) {
+        logError("Error executing MCP tool:", error);
+        results.push({
+          tool_call_id: toolCall.id || "unknown",
+          tool_name: toolCall.name || "unknown",
+          output: { error: err2String(error) },
+        });
+      }
+    }
+
+    return results;
+  }
+
+  protected async streamMultimodalResponse(
     textContent: string,
     userMessage: ChatMessage,
     abortController: AbortController,
     updateCurrentAiMessage: (message: string) => void,
     debug: boolean
   ): Promise<string> {
+    // Detect MCP tools in the original user message
+    const originalMessage = userMessage.originalMessage || userMessage.message;
+    const mentionedMCPTools = this.detectMCPTools(originalMessage);
+
+    // Strip MCP mentions from text content if any were found
+    let processedTextContent = textContent;
+    if (mentionedMCPTools.length > 0) {
+      processedTextContent = this.stripMCPMentions(textContent);
+    }
+
     // Get chat history
     const memory = this.chainManager.memoryManager.getMemory();
     const memoryVariables = await memory.loadMemoryVariables({});
@@ -504,8 +682,8 @@ class CopilotPlusChainRunner extends BaseChainRunner {
 
     // Build message content with text and images for multimodal models, or just text for text-only models
     const content = isMultimodalCurrent
-      ? await this.buildMessageContent(textContent, userMessage)
-      : textContent;
+      ? await this.buildMessageContent(processedTextContent, userMessage)
+      : processedTextContent;
 
     // Add current user message
     messages.push({
@@ -515,20 +693,187 @@ class CopilotPlusChainRunner extends BaseChainRunner {
 
     const enhancedUserMessage = content instanceof Array ? (content[0] as any).text : content;
     logInfo("Enhanced user message: ", enhancedUserMessage);
-    logInfo("==== Final Request to AI ====\n", messages);
-    const streamer = new ThinkBlockStreamer(updateCurrentAiMessage);
 
-    // Wrap the stream call with warning suppression
-    const chatStream = await withSuppressedTokenWarnings(() =>
-      this.chainManager.chatModelManager.getChatModel().stream(messages)
-    );
+    // Check if we need to bind MCP tools for function calling
+    let modelToUse: BaseChatModel | Runnable = chatModelCurrent;
+    if (mentionedMCPTools.length > 0) {
+      const toolDefinitions = await this.getMCPToolDefinitions(mentionedMCPTools);
+      if (toolDefinitions.length > 0) {
+        // Bind tools to the model
+        try {
+          if ("bindTools" in chatModelCurrent && typeof chatModelCurrent.bindTools === "function") {
+            modelToUse = chatModelCurrent.bindTools(toolDefinitions);
+            logInfo(
+              "Bound MCP tools to model:",
+              toolDefinitions.map((t: any) => t.name)
+            );
+          } else {
+            console.warn("Model does not support tool binding, using original model");
+            modelToUse = chatModelCurrent;
+          }
+        } catch (error) {
+          console.warn("Failed to bind tools to model, falling back to original model:", error);
+          // Fall back to original model if binding fails
+          modelToUse = chatModelCurrent;
+        }
+      }
+    }
+
+    logInfo("==== Final Request to AI ====\n", messages);
+
+    let fullResponse = "";
+    const toolCallsBuffer: any[] = [];
+    let hasToolCalls = false;
+
+    // For accumulating partial tool call arguments
+    const toolCallAccumulator: Map<number, { name: string; args: string; id?: string }> = new Map();
+
+    // Streaming mode: process chunks as they arrive
+    const streamer = new ThinkBlockStreamer(updateCurrentAiMessage);
+    const chatStream = await withSuppressedTokenWarnings(() => modelToUse.stream(messages));
 
     for await (const chunk of chatStream) {
       if (abortController.signal.aborted) break;
+
+      // Handle tool_call_chunks for partial tool call data
+      if (chunk.tool_call_chunks && chunk.tool_call_chunks.length > 0) {
+        hasToolCalls = true;
+
+        for (const toolChunk of chunk.tool_call_chunks) {
+          const index = toolChunk.index;
+
+          if (!toolCallAccumulator.has(index)) {
+            toolCallAccumulator.set(index, { name: "", args: "", id: toolChunk.id });
+          }
+
+          const accumulator = toolCallAccumulator.get(index)!;
+
+          // Accumulate name if provided
+          if (toolChunk.name) {
+            accumulator.name = toolChunk.name;
+          }
+
+          // Accumulate args (partial JSON)
+          if (toolChunk.args) {
+            accumulator.args += toolChunk.args;
+          }
+
+          // Update ID if provided
+          if (toolChunk.id) {
+            accumulator.id = toolChunk.id;
+          }
+        }
+
+        logInfo("Tool call accumulator state:", Array.from(toolCallAccumulator.entries()));
+      }
+
+      // Check if this chunk contains complete tool calls (fallback for non-streaming providers)
+      // Only process if we don't have tool_call_chunks (which means we're accumulating)
+      if (!chunk.tool_call_chunks && chunk.tool_calls && chunk.tool_calls.length > 0) {
+        const validToolCalls = chunk.tool_calls.filter(
+          (tc: any) => tc.name && tc.name.trim() !== ""
+        );
+        if (validToolCalls.length > 0) {
+          hasToolCalls = true;
+          logInfo("Complete tool calls received:", JSON.stringify(validToolCalls));
+
+          for (const toolCall of validToolCalls) {
+            toolCallsBuffer.push({
+              ...toolCall,
+              id:
+                toolCall.id || `tool_call_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+              name: toolCall.name,
+              args: toolCall.args || toolCall.input || {},
+            });
+          }
+        }
+      }
+
+      // Process chunk content (text, thinking blocks, etc.)
       streamer.processChunk(chunk);
     }
 
-    return streamer.close();
+    // After streaming is done, parse accumulated tool calls
+    if (hasToolCalls && toolCallAccumulator.size > 0) {
+      // Clear the buffer first if we have accumulated tool calls
+      // This prevents duplicates from the incomplete tool_calls array
+      toolCallsBuffer.length = 0;
+
+      for (const [index, accumulator] of toolCallAccumulator.entries()) {
+        if (accumulator.name && accumulator.args) {
+          try {
+            // Parse the accumulated JSON arguments
+            const parsedArgs = JSON.parse(accumulator.args);
+            toolCallsBuffer.push({
+              id: accumulator.id || `tool_call_${Date.now()}_${index}`,
+              name: accumulator.name,
+              args: parsedArgs,
+            });
+            logInfo(`Parsed tool call ${index}:`, { name: accumulator.name, args: parsedArgs });
+          } catch (error) {
+            logError(
+              `Failed to parse tool call arguments for ${accumulator.name}:`,
+              accumulator.args,
+              error
+            );
+          }
+        }
+      }
+    }
+
+    fullResponse = streamer.close();
+
+    // If we received tool calls, execute them and continue the conversation
+    if (hasToolCalls && toolCallsBuffer.length > 0) {
+      logInfo("Executing tools and continuing conversation...");
+      logInfo("Tool calls to execute:", toolCallsBuffer);
+
+      // Execute the tools
+      const toolResults = await this.executeMCPTools(toolCallsBuffer, mentionedMCPTools);
+      console.log("✅ Tool execution results:", toolResults);
+
+      // Add tool calls and results to message history for current conversation
+      const assistantWithToolCallsMessage = {
+        role: "assistant",
+        content: fullResponse,
+        tool_calls: toolCallsBuffer,
+      };
+      messages.push(assistantWithToolCallsMessage);
+
+      // Add tool results to message history
+      const toolResultMessages = [];
+      for (const result of toolResults) {
+        const toolResultMessage = {
+          role: "tool",
+          content: JSON.stringify(result.output),
+          tool_call_id: result.tool_call_id,
+          name: result.tool_name,
+        };
+        messages.push(toolResultMessage);
+        toolResultMessages.push(toolResultMessage);
+      }
+
+      // Store tool results for later inclusion in memory
+      // This will be used by handleResponse to include tool context
+      (this as any).lastToolResults = toolResultMessages;
+
+      // Continue conversation with tool results
+
+      // Streaming follow-up
+      const streamer = new ThinkBlockStreamer(updateCurrentAiMessage);
+      streamer.fullResponse = fullResponse; // Initialize with existing content
+
+      const followUpStream = await withSuppressedTokenWarnings(() => modelToUse.stream(messages));
+
+      for await (const followUpChunk of followUpStream) {
+        if (abortController.signal.aborted) break;
+        streamer.processChunk(followUpChunk);
+      }
+
+      fullResponse = streamer.close();
+    }
+
+    return fullResponse;
   }
 
   async run(
@@ -806,6 +1151,93 @@ class CopilotPlusChainRunner extends BaseChainRunner {
   }
 }
 
+/**
+ * Handles Pirate mode requests without using the Broca API. When the
+ * user includes `@vault` in the message it performs a retrieval style
+ * QA request, otherwise it behaves like a normal chat interaction that
+ * supports multimodal input. Sources are appended when available.
+ */
+class PirateChainRunner extends CopilotPlusChainRunner {
+  async run(
+    userMessage: ChatMessage,
+    abortController: AbortController,
+    updateCurrentAiMessage: (message: string) => void,
+    addMessage: (message: ChatMessage) => void,
+    options: {
+      debug?: boolean;
+      ignoreSystemMessage?: boolean;
+      updateLoading?: (loading: boolean) => void;
+      updateLoadingMessage?: (message: string) => void;
+    }
+  ): Promise<string> {
+    const { debug = false } = options;
+    let fullAIResponse = "";
+
+    try {
+      const includesVault = userMessage.originalMessage?.includes("@vault") ?? false;
+      const cleanedMessage = userMessage.message.replace("@vault", "").trim();
+
+      if (includesVault) {
+        const indexEmpty = await this.chainManager.vectorStoreManager.isIndexEmpty();
+        if (indexEmpty) {
+          return this.handleResponse(
+            EMPTY_INDEX_ERROR_MESSAGE,
+            userMessage,
+            abortController,
+            addMessage,
+            updateCurrentAiMessage,
+            debug
+          );
+        }
+
+        const memory = this.chainManager.memoryManager.getMemory();
+        const memoryVariables = await memory.loadMemoryVariables({});
+        const chatHistory = extractChatHistory(memoryVariables);
+        const qaStream = await this.chainManager.getRetrievalChain().stream({
+          question: cleanedMessage,
+          chat_history: chatHistory,
+        } as any);
+
+        for await (const chunk of qaStream) {
+          if (abortController.signal.aborted) break;
+          fullAIResponse += chunk.content;
+          updateCurrentAiMessage(fullAIResponse);
+        }
+
+        fullAIResponse = this.addSourcestoResponse(fullAIResponse);
+      } else {
+        fullAIResponse = await this.streamMultimodalResponse(
+          cleanedMessage,
+          userMessage,
+          abortController,
+          updateCurrentAiMessage,
+          debug
+        );
+      }
+    } catch (error) {
+      await this.handleError(error, debug, addMessage, updateCurrentAiMessage);
+    }
+
+    return this.handleResponse(
+      fullAIResponse,
+      userMessage,
+      abortController,
+      addMessage,
+      updateCurrentAiMessage,
+      debug
+    );
+  }
+
+  private addSourcestoResponse(response: string): string {
+    const docTitles = extractUniqueTitlesFromDocs(this.chainManager.getRetrievedDocuments());
+    if (docTitles.length > 0) {
+      const links = docTitles.map((title) => `- [[${title}]]`).join("\n");
+      response += "\n\n#### Sources:\n\n" + links;
+    }
+    return response;
+  }
+}
+
 class ProjectChainRunner extends CopilotPlusChainRunner {
   protected async getSystemPrompt(): Promise<string> {
     let finalPrompt = getSystemPrompt();
@@ -827,4 +1259,10 @@ class ProjectChainRunner extends CopilotPlusChainRunner {
   }
 }
 
-export { CopilotPlusChainRunner, LLMChainRunner, ProjectChainRunner, VaultQAChainRunner };
+export {
+  CopilotPlusChainRunner,
+  PirateChainRunner,
+  LLMChainRunner,
+  ProjectChainRunner,
+  VaultQAChainRunner,
+};

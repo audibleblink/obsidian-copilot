@@ -170,6 +170,7 @@ export function ChatControls({
                   copilot plus (beta)
                 </div>
               )}
+              {selectedChain === ChainType.PIRATE_CHAIN && "pirate"}
               {selectedChain === ChainType.PROJECT_CHAIN && "projects (alpha)"}
               <ChevronDown className="tw-mt-0.5 tw-size-5" />
             </Button>
@@ -188,6 +189,13 @@ export function ChatControls({
               }}
             >
               vault QA
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onSelect={() => {
+                handleModeChange(ChainType.PIRATE_CHAIN);
+              }}
+            >
+              pirate
             </DropdownMenuItem>
             {isPlusUser ? (
               <DropdownMenuItem

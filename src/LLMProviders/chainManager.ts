@@ -10,6 +10,7 @@ import { BUILTIN_CHAT_MODELS, USER_SENDER } from "@/constants";
 import {
   ChainRunner,
   CopilotPlusChainRunner,
+  PirateChainRunner,
   LLMChainRunner,
   ProjectChainRunner,
   VaultQAChainRunner,
@@ -243,6 +244,36 @@ export default class ChainManager {
         break;
       }
 
+      case ChainType.PIRATE_CHAIN: {
+        await this.initializeQAChain(options);
+        this.chain = ChainFactory.createNewLLMChain({
+          llm: chatModel,
+          memory: memory,
+          prompt: options.prompt || chatPrompt,
+          abortController: options.abortController,
+        }) as RunnableSequence;
+
+        // Initialize retrieval chain for @vault functionality
+        const retriever = new HybridRetriever({
+          minSimilarityScore: 0.01,
+          maxK: getSettings().maxSourceChunks,
+          salientTerms: [],
+        });
+
+        this.retrievalChain = ChainFactory.createConversationalRetrievalChain(
+          {
+            llm: chatModel,
+            retriever: retriever,
+            systemMessage: getSystemPrompt(),
+          },
+          this.storeRetrieverDocuments.bind(this),
+          getSettings().debug
+        );
+
+        setChainType(ChainType.PIRATE_CHAIN);
+        break;
+      }
+
       case ChainType.PROJECT_CHAIN: {
         // For initial load of the plugin
         await this.initializeQAChain(options);
@@ -271,6 +302,8 @@ export default class ChainManager {
         return new VaultQAChainRunner(this);
       case ChainType.COPILOT_PLUS_CHAIN:
         return new CopilotPlusChainRunner(this);
+      case ChainType.PIRATE_CHAIN:
+        return new PirateChainRunner(this);
       case ChainType.PROJECT_CHAIN:
         return new ProjectChainRunner(this);
       default:
