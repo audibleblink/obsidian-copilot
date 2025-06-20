@@ -86,6 +86,7 @@ export class ContextProcessor {
         // 2. Apply chain restrictions only to supported files that are NOT md or canvas
         if (
           currentChain !== ChainType.COPILOT_PLUS_CHAIN &&
+          currentChain !== ChainType.PIRATE_CHAIN &&
           note.extension !== "md" &&
           note.extension !== "canvas"
         ) {
@@ -100,7 +101,10 @@ export class ContextProcessor {
         let content = await fileParserManager.parseFile(note, vault);
 
         // Special handling for embedded PDFs within markdown (only in Plus mode)
-        if (note.extension === "md" && currentChain === ChainType.COPILOT_PLUS_CHAIN) {
+        if (
+          note.extension === "md" &&
+          (currentChain === ChainType.COPILOT_PLUS_CHAIN || currentChain === ChainType.PIRATE_CHAIN)
+        ) {
           content = await this.processEmbeddedPDFs(content, vault, fileParserManager);
         }
 

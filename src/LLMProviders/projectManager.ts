@@ -64,7 +64,8 @@ export default class ProjectManager {
         refreshIndex:
           getSettings().indexVaultToVectorStore === VAULT_VECTOR_STORE_STRATEGY.ON_MODE_SWITCH &&
           (getChainType() === ChainType.VAULT_QA_CHAIN ||
-            getChainType() === ChainType.COPILOT_PLUS_CHAIN),
+            getChainType() === ChainType.COPILOT_PLUS_CHAIN ||
+            getChainType() === ChainType.PIRATE_CHAIN),
       });
     });
 
